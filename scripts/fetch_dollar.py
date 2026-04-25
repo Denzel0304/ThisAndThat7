@@ -11,27 +11,22 @@ headers = {
     "Referer": "https://www.naver.com"
 }
 
-url = "https://search.naver.com/search.naver?ie=UTF-8&query=%EB%8B%AC%EB%9F%AC%ED%99%98%EC%9C%A8&sm=chr_hty"
-res = requests.get(url, headers=headers, timeout=10)
-html = res.text
+urls = [
+    "https://m.search.naver.com/search.naver?query=%EB%8B%AC%EB%9F%AC%ED%99%98%EC%9C%A8",
+    "https://finance.naver.com/marketindex/exchangeList.naver?type=R",
+    "https://m.stock.naver.com/front-api/v2/marketIndex/exchange?category=exchange&page=1&pageSize=10",
+]
 
-print(f"=== HTTP 상태코드: {res.status_code} ===")
-print(f"=== HTML 길이: {len(html)} ===")
-
-# 1000~2000 사이 숫자 패턴 전부 출력
-matches = re.findall(r'1[0-9]{3}[.,]\d{2}', html)
-print("\n=== 1000~2000 범위 숫자 전체 ===")
-for m in matches:
-    print(m)
-
-# HTML 앞부분
-print("\n=== HTML 앞 500자 ===")
-print(html[:500])
-
-# 환율 키워드 주변
-for keyword in ["환율", "USD", "KRW", "달러"]:
-    idx = html.find(keyword)
-    if idx > 0:
-        print(f"\n=== '{keyword}' 주변 HTML ===")
-        print(html[max(0, idx-100):idx+300])
-        break
+for url in urls:
+    print(f"\n=== URL: {url} ===")
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        html = res.text
+        print(f"상태코드: {res.status_code}, 길이: {len(html)}")
+        matches = re.findall(r'1[0-9]{3}\.\d{2}', html)
+        print(f"1000~2000 숫자: {matches[:10]}")
+        # 1477 근처 값 찾기
+        near = [m for m in matches if 1470 <= float(m) <= 1490]
+        print(f"1470~1490 범위: {near}")
+    except Exception as e:
+        print(f"오류: {e}")
