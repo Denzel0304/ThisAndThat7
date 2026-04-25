@@ -12,21 +12,56 @@ SUPABASE_KEY     = os.environ["SUPABASE_KEY"]
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN_DOLLAR"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID_DOLLAR"]
 
-CONFIG_ID  = "config"
-SKIP_START = (23, 30)
-SKIP_END   = (0, 10)
+CONFIG_ID = "config"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-def is_maintenance_time() -> bool:
-    kst   = datetime.now(timezone(timedelta(hours=9)))
-    total = kst.hour * 60 + kst.minute
-    s     = SKIP_START[0] * 60 + SKIP_START[1]
-    e     = SKIP_END[0]   * 60 + SKIP_END[1]
-    return total >= s or total <= e
+# ────────────────────────────────────────────
+# 활성 시간 체크 (KST 기준)
+# 활성: 평일 09:00~15:30, 평일 22:30~익일 06:00
+# 제외: 토/일 전일, 15:30~22:30, 06:00~09:00, 23:30~00:10 점검
+# ────────────────────────────────────────────
+def is_active_time() -> bool:
+    kst     = datetime.now(timezone(timedelta(hours=9)))
+    weekday = kst.weekday()  # 0=월 1=화 2=수 3=목 4=금 5=토 6=일
+    h, m    = kst.hour, kst.minute
+    total   = h * 60 + m  # 자정 기준 분
+
+    # 토요일 전일 제외
+    if weekday == 5:
+        return False
+
+    # 일요일 전일 제외
+    if weekday == 6:
+        return False
+
+    # 월요일 00:00~06:00 제외 (일요일 뉴욕 야간 없음)
+    if weekday == 0 and total < 6 * 60:
+        return False
+
+    # 카카오뱅크 점검 시간 제외: 23:30~00:10
+    if total >= 23 * 60 + 30 or total <= 10:
+        return False
+
+    # 활성 구간 1: 09:00 ~ 15:30
+    if 9 * 60 <= total <= 15 * 60 + 30:
+        return True
+
+    # 활성 구간 2: 22:30 ~ 23:30 (점검 직전까지)
+    if 22 * 60 + 30 <= total < 23 * 60 + 30:
+        return True
+
+    # 활성 구간 3: 00:10 ~ 06:00 (점검 이후 새벽)
+    if 10 < total <= 6 * 60:
+        return True
+
+    return False
 
 
+# ────────────────────────────────────────────
+# 텔레그램 발송
+# ────────────────────────────────────────────
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
@@ -43,6 +78,9 @@ def send_telegram(text: str):
         print(f"❌ 텔레그램 오류: {e}")
 
 
+# ────────────────────────────────────────────
+# 텔레그램 새 메시지 가져오기
+# ────────────────────────────────────────────
 def get_new_messages(last_update_id):
     params = {"timeout": 0}
     if last_update_id:
@@ -60,17 +98,25 @@ def get_new_messages(last_update_id):
     return []
 
 
+# ────────────────────────────────────────────
+# Supabase 설정 조회
+# ────────────────────────────────────────────
 def get_config():
     res = supabase.table("zdollar").select("*").eq("id", CONFIG_ID).single().execute()
     return res.data
 
 
+# ────────────────────────────────────────────
+# Supabase 설정 업데이트
+# ────────────────────────────────────────────
 def update_config(payload: dict):
     supabase.table("zdollar").update(payload).eq("id", CONFIG_ID).execute()
 
 
+# ────────────────────────────────────────────
+# 네이버 금융 USD/KRW 스크래핑
+# ────────────────────────────────────────────
 def fetch_usd_krw():
-    # 네이버 금융 환전 고시 환율 리스트 (iframe 내부 - JS 렌더링 없이 실제 데이터 포함)
     url = "https://finance.naver.com/marketindex/exchangeList.naver?type=R"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
@@ -80,9 +126,6 @@ def fetch_usd_krw():
     try:
         res = requests.get(url, headers=headers, timeout=10)
         html = res.text
-
-        # USD 행에서 class="sale" 첫 번째 값 (매매기준율)
-        # 미국 USD 다음에 나오는 첫 번째 sale 클래스 값
         match = re.search(
             r'FX_USDKRW.*?class="sale">([\d,]+\.?\d*)',
             html, re.DOTALL
@@ -92,15 +135,16 @@ def fetch_usd_krw():
             if 900 < rate < 2000:
                 print(f"✅ 환율 조회 성공: {rate}원")
                 return rate
-
         print("❌ 환율 파싱 실패")
         return None
-
     except Exception as e:
         print(f"❌ 환율 조회 오류: {e}")
         return None
 
 
+# ────────────────────────────────────────────
+# 텔레그램 명령어 처리
+# ────────────────────────────────────────────
 def handle_commands(messages: list, config: dict, current_rate) -> dict:
     updates = {}
     last_update_id = config.get("usd_last_tg_update_id")
@@ -179,6 +223,9 @@ def handle_commands(messages: list, config: dict, current_rate) -> dict:
     return updates
 
 
+# ────────────────────────────────────────────
+# 환율 알림 조건 판단
+# ────────────────────────────────────────────
 def check_and_alert(config: dict, current_rate: float) -> dict:
     base      = config.get("usd_base_rate")
     threshold = config.get("usd_threshold")
@@ -217,33 +264,48 @@ def check_and_alert(config: dict, current_rate: float) -> dict:
     }
 
 
+# ────────────────────────────────────────────
+# 메인
+# ────────────────────────────────────────────
 def main():
-    if is_maintenance_time():
-        print("🔧 점검 시간 (23:30~00:10) — 종료")
+    kst = datetime.now(timezone(timedelta(hours=9)))
+    print(f"🕐 현재 KST: {kst.strftime('%Y-%m-%d %H:%M (%A)')}")
+
+    # 활성 시간 체크
+    if not is_active_time():
+        print("⏸ 비활성 시간 (토/일 또는 휴장 시간대) — 종료")
         return
 
-    config = get_config()
-    print(f"⚙️ 설정: {config}")
+    print("▶ 활성 시간 — 환율 체크 시작")
 
+    # Supabase 설정 조회
+    config = get_config()
+    print(f"⚙️ 설정: base={config.get('usd_base_rate')}, threshold={config.get('usd_threshold')}, active={config.get('usd_active')}")
+
+    # 현재 환율 조회
     current_rate = fetch_usd_krw()
     if current_rate:
         print(f"💵 현재 환율: {current_rate:,.2f}원")
     else:
         print("❌ 환율 조회 실패")
 
+    # 텔레그램 명령어 처리
     last_update_id = config.get("usd_last_tg_update_id")
     messages = get_new_messages(last_update_id)
     updates  = handle_commands(messages, config, current_rate)
 
+    # 명령어로 바뀐 설정 반영
     merged_config = {**config, **updates}
 
+    # 알림 활성 + 환율 조회 성공 시 조건 판단
     if merged_config.get("usd_active") and current_rate:
         alert_updates = check_and_alert(merged_config, current_rate)
         updates.update(alert_updates)
 
+    # 변경사항 Supabase 저장
     if updates:
         update_config(updates)
-        print(f"💾 Supabase 업데이트: {updates}")
+        print(f"💾 Supabase 업데이트: {list(updates.keys())}")
     else:
         print("ℹ️ 변경사항 없음")
 
