@@ -7,15 +7,15 @@ from supabase import create_client
 # ────────────────────────────────────────────
 # 환경변수
 # ────────────────────────────────────────────
-SUPABASE_URL         = os.environ["SUPABASE_URL"]
-SUPABASE_KEY         = os.environ["SUPABASE_KEY"]
-TELEGRAM_TOKEN       = os.environ["TELEGRAM_TOKEN_DOLLAR"]
-TELEGRAM_CHAT_ID     = os.environ["TELEGRAM_CHAT_ID_DOLLAR"]
+SUPABASE_URL     = os.environ["SUPABASE_URL"]
+SUPABASE_KEY     = os.environ["SUPABASE_KEY"]
+TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN_DOLLAR"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID_DOLLAR"]
 
-# Supabase 고정 행 ID
-CONFIG_ID = "00000000-0000-0000-0000-000000000001"
+# zdollar 테이블 고정 행 ID
+CONFIG_ID = "config"
 
-# KST 기준 점검 제외 시간 (23:30 ~ 00:10)
+# KST 점검 제외 시간 23:30 ~ 00:10
 SKIP_START = (23, 30)
 SKIP_END   = (0, 10)
 
@@ -23,20 +23,18 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ────────────────────────────────────────────
-# 시간 체크 (점검 시간이면 종료)
+# 점검 시간 체크
 # ────────────────────────────────────────────
 def is_maintenance_time() -> bool:
-    kst = datetime.now(timezone(timedelta(hours=9)))
-    h, m = kst.hour, kst.minute
-    total = h * 60 + m
-    skip_s = SKIP_START[0] * 60 + SKIP_START[1]  # 23:30 = 1410
-    skip_e = SKIP_END[0]   * 60 + SKIP_END[1]    # 00:10 = 10
-    # 자정 걸치므로: 1410 이상 OR 10 이하
-    return total >= skip_s or total <= skip_e
+    kst   = datetime.now(timezone(timedelta(hours=9)))
+    total = kst.hour * 60 + kst.minute
+    s     = SKIP_START[0] * 60 + SKIP_START[1]  # 1410
+    e     = SKIP_END[0]   * 60 + SKIP_END[1]    # 10
+    return total >= s or total <= e
 
 
 # ────────────────────────────────────────────
-# 텔레그램 메시지 발송
+# 텔레그램 발송
 # ────────────────────────────────────────────
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -55,13 +53,12 @@ def send_telegram(text: str):
 
 
 # ────────────────────────────────────────────
-# 텔레그램 새 메시지 가져오기 (offset 방식)
+# 텔레그램 새 메시지 가져오기
 # ────────────────────────────────────────────
 def get_new_messages(last_update_id):
-    offset = (last_update_id + 1) if last_update_id else None
     params = {"timeout": 0}
-    if offset:
-        params["offset"] = offset
+    if last_update_id:
+        params["offset"] = last_update_id + 1
     try:
         res = requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
@@ -79,10 +76,7 @@ def get_new_messages(last_update_id):
 # Supabase 설정 조회
 # ────────────────────────────────────────────
 def get_config():
-    res = supabase.table("zlotto").select(
-        "usd_base_rate, usd_threshold, usd_last_alert_rate, "
-        "usd_last_alert_at, usd_last_tg_update_id, usd_active"
-    ).eq("id", CONFIG_ID).single().execute()
+    res = supabase.table("zdollar").select("*").eq("id", CONFIG_ID).single().execute()
     return res.data
 
 
@@ -90,67 +84,66 @@ def get_config():
 # Supabase 설정 업데이트
 # ────────────────────────────────────────────
 def update_config(payload: dict):
-    supabase.table("zlotto").update(payload).eq("id", CONFIG_ID).execute()
+    supabase.table("zdollar").update(payload).eq("id", CONFIG_ID).execute()
 
 
 # ────────────────────────────────────────────
-# 네이버 금융 USD/KRW 스크래핑
+# 네이버 금융 USD/KRW 스크래핑 (다중 방어)
 # ────────────────────────────────────────────
-def fetch_usd_krw() -> float | None:
-    url = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
+def fetch_usd_krw():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://finance.naver.com/marketindex/"
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://finance.naver.com/marketindex/",
+        "Accept-Language": "ko-KR,ko;q=0.9"
     }
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        html = res.text
 
-        # 방법 1: h1.tit 현재가
-        match = re.search(r'class="tit"[^>]*>\s*([\d,]+\.?\d*)', html)
-        if match:
-            rate = float(match.group(1).replace(",", ""))
-            if 900 < rate < 2000:
-                print(f"✅ 환율 조회 성공 (방법1): {rate}")
-                return rate
+    targets = [
+        (
+            "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW",
+            [
+                r'<p class="no_today">\s*<em[^>]*>\s*<span[^>]*>([\d,]+\.?\d*)</span>',
+                r'class="blind">(1[0-9]{3}[\.,]\d{2})',
+                r'"closePrice"\s*:\s*"([\d.]+)"',
+            ]
+        ),
+        (
+            "https://finance.naver.com/marketindex/",
+            [
+                r'FX_USDKRW[^<]*<span[^>]*>([\d,]+\.?\d*)</span>',
+                r'(1[0-9]{3}\.\d{2})',
+            ]
+        ),
+    ]
 
-        # 방법 2: data-value 또는 blind 태그
-        match = re.search(r'<span[^>]*class="[^"]*value[^"]*"[^>]*>([\d,]+\.?\d*)<', html)
-        if match:
-            rate = float(match.group(1).replace(",", ""))
-            if 900 < rate < 2000:
-                print(f"✅ 환율 조회 성공 (방법2): {rate}")
-                return rate
+    for url, patterns in targets:
+        try:
+            res = requests.get(url, headers=headers, timeout=10)
+            html = res.text
+            for pattern in patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    raw  = match.group(1).replace(",", "")
+                    rate = float(raw)
+                    if 900 < rate < 2000:
+                        print(f"✅ 환율 조회 성공: {rate}원")
+                        return rate
+                    else:
+                        print(f"⚠️ 범위 초과 무시: {rate}")
+        except Exception as e:
+            print(f"❌ 환율 조회 오류 ({url}): {e}")
 
-        # 방법 3: 숫자 패턴 직접 탐색
-        matches = re.findall(r'(1[0-9]{3}\.\d{2})', html)
-        if matches:
-            rate = float(matches[0])
-            print(f"✅ 환율 조회 성공 (방법3): {rate}")
-            return rate
-
-        print("❌ 환율 파싱 실패")
-        return None
-
-    except Exception as e:
-        print(f"❌ 환율 조회 오류: {e}")
-        return None
+    print("❌ 모든 방법으로 환율 조회 실패")
+    return None
 
 
 # ────────────────────────────────────────────
 # 텔레그램 명령어 처리
 # ────────────────────────────────────────────
-def handle_commands(messages: list, config: dict, current_rate: float | None) -> dict:
-    """
-    명령어:
-      /기준가 1370  → usd_base_rate 설정
-      /범위 5       → usd_threshold 설정
-      /현재         → 현재 설정 + 환율 답장
-      /리셋         → 기준가를 현재 환율로 리셋
-      /중지         → usd_active = false
-      /시작         → usd_active = true
-    """
+def handle_commands(messages: list, config: dict, current_rate) -> dict:
     updates = {}
     last_update_id = config.get("usd_last_tg_update_id")
 
@@ -160,7 +153,6 @@ def handle_commands(messages: list, config: dict, current_rate: float | None) ->
         text      = message.get("text", "").strip()
         chat_id   = str(message.get("chat", {}).get("id", ""))
 
-        # 본인 채팅방 메시지만 처리
         if chat_id != str(TELEGRAM_CHAT_ID):
             last_update_id = update_id
             continue
@@ -189,14 +181,18 @@ def handle_commands(messages: list, config: dict, current_rate: float | None) ->
             active    = config.get("usd_active")
             rate_str  = f"{current_rate:,.2f}원" if current_rate else "조회 실패"
             status    = "🟢 활성" if active else "🔴 중지"
-            upper     = f"{base + threshold:,.2f}" if base and threshold else "-"
-            lower     = f"{base - threshold:,.2f}" if base and threshold else "-"
+            if base and threshold:
+                upper = f"{base + threshold:,.2f}"
+                lower = f"{base - threshold:,.2f}"
+                cond  = f"{lower}원 이하 or {upper}원 이상"
+            else:
+                cond = "미설정"
             send_telegram(
                 f"📊 <b>현재 설정</b>\n\n"
                 f"상태: {status}\n"
                 f"기준가: <b>{base:,.2f}원</b>\n"
                 f"변동폭: ±{threshold:.1f}원\n"
-                f"알림 조건: {lower}원 이하 or {upper}원 이상\n"
+                f"알림 조건: {cond}\n"
                 f"현재 환율: <b>{rate_str}</b>"
             )
 
@@ -228,7 +224,7 @@ def handle_commands(messages: list, config: dict, current_rate: float | None) ->
 # ────────────────────────────────────────────
 # 환율 알림 조건 판단
 # ────────────────────────────────────────────
-def check_and_alert(config: dict, current_rate: float):
+def check_and_alert(config: dict, current_rate: float) -> dict:
     base      = config.get("usd_base_rate")
     threshold = config.get("usd_threshold")
 
@@ -236,7 +232,7 @@ def check_and_alert(config: dict, current_rate: float):
         print("⚠️ 기준가 또는 변동폭 미설정")
         return {}
 
-    diff    = current_rate - base
+    diff     = current_rate - base
     abs_diff = abs(diff)
 
     print(f"📈 기준가: {base}, 현재: {current_rate}, 차이: {diff:+.2f}원")
@@ -259,11 +255,10 @@ def check_and_alert(config: dict, current_rate: float):
         f"<i>기준가가 {current_rate:,.2f}원으로 자동 업데이트됩니다.</i>"
     )
 
-    # 알림 후 기준가 자동 리셋
     return {
-        "usd_base_rate":      current_rate,
+        "usd_base_rate":       current_rate,
         "usd_last_alert_rate": current_rate,
-        "usd_last_alert_at":  datetime.now(timezone.utc).isoformat(),
+        "usd_last_alert_at":   datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -287,15 +282,15 @@ def main():
     else:
         print("❌ 환율 조회 실패")
 
-    # 4. 텔레그램 새 메시지 확인 및 명령어 처리
+    # 4. 텔레그램 명령어 처리
     last_update_id = config.get("usd_last_tg_update_id")
     messages = get_new_messages(last_update_id)
     updates  = handle_commands(messages, config, current_rate)
 
-    # 5. 명령어로 설정이 바뀐 경우 config에도 반영
+    # 5. 명령어로 바뀐 설정을 config에 반영
     merged_config = {**config, **updates}
 
-    # 6. 알림 활성 상태이고 환율 조회 성공 시 조건 판단
+    # 6. 알림 활성 + 환율 조회 성공 시 조건 판단
     if merged_config.get("usd_active") and current_rate:
         alert_updates = check_and_alert(merged_config, current_rate)
         updates.update(alert_updates)
