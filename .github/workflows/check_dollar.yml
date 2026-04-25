@@ -1,0 +1,26 @@
+name: 달러 환율 알림
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch-dollar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: pip install requests supabase
+
+      - name: 환율 체크 및 알림
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_TOKEN_DOLLAR: ${{ secrets.TELEGRAM_TOKEN_DOLLAR }}
+          TELEGRAM_CHAT_ID_DOLLAR: ${{ secrets.TELEGRAM_CHAT_ID_DOLLAR }}
+        run: python scripts/fetch_dollar.py
