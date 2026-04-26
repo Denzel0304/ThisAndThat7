@@ -18,15 +18,14 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ────────────────────────────────────────────
-# 활성 시간 체크 (KST 기준)
+# 활성 시간 체크 (환율 알림용)
 # 활성: 평일 09:00~15:30, 평일 22:30~익일 06:00
-# 제외: 토/일 전일, 15:30~22:30, 06:00~09:00, 23:30~00:10 점검
 # ────────────────────────────────────────────
 def is_active_time() -> bool:
     kst     = datetime.now(timezone(timedelta(hours=9)))
-    weekday = kst.weekday()  # 0=월 1=화 2=수 3=목 4=금 5=토 6=일
+    weekday = kst.weekday()  # 0=월 ~ 4=금 5=토 6=일
     h, m    = kst.hour, kst.minute
-    total   = h * 60 + m  # 자정 기준 분
+    total   = h * 60 + m
 
     # 토요일 전일 제외
     if weekday == 5:
@@ -36,7 +35,7 @@ def is_active_time() -> bool:
     if weekday == 6:
         return False
 
-    # 월요일 00:00~06:00 제외 (일요일 뉴욕 야간 없음)
+    # 월요일 00:00~06:00 제외
     if weekday == 0 and total < 6 * 60:
         return False
 
@@ -48,11 +47,11 @@ def is_active_time() -> bool:
     if 9 * 60 <= total <= 15 * 60 + 30:
         return True
 
-    # 활성 구간 2: 22:30 ~ 23:30 (점검 직전까지)
+    # 활성 구간 2: 22:30 ~ 23:30
     if 22 * 60 + 30 <= total < 23 * 60 + 30:
         return True
 
-    # 활성 구간 3: 00:10 ~ 06:00 (점검 이후 새벽)
+    # 활성 구간 3: 00:10 ~ 06:00
     if 10 < total <= 6 * 60:
         return True
 
@@ -181,8 +180,9 @@ def handle_commands(messages: list, config: dict, current_rate) -> dict:
             base      = updates.get("usd_base_rate", config.get("usd_base_rate"))
             threshold = updates.get("usd_threshold", config.get("usd_threshold"))
             active    = config.get("usd_active")
-            rate_str  = f"{current_rate:,.2f}원" if current_rate else "조회 실패"
-            status    = "🟢 활성" if active else "🔴 중지"
+            active_str = "🟢 활성" if is_active_time() else "⏸ 비활성 시간대"
+            alarm_str  = "🟢 켜짐" if active else "🔴 꺼짐"
+            rate_str   = f"{current_rate:,.2f}원" if current_rate else "비활성 시간대 (조회 안함)"
             if base and threshold:
                 upper = f"{base + threshold:,.2f}"
                 lower = f"{base - threshold:,.2f}"
@@ -191,7 +191,8 @@ def handle_commands(messages: list, config: dict, current_rate) -> dict:
                 cond = "미설정"
             send_telegram(
                 f"📊 <b>현재 설정</b>\n\n"
-                f"상태: {status}\n"
+                f"시간대: {active_str}\n"
+                f"알림: {alarm_str}\n"
                 f"기준가: <b>{base:,.2f}원</b>\n"
                 f"변동폭: ±{threshold:.1f}원\n"
                 f"알림 조건: {cond}\n"
@@ -205,7 +206,7 @@ def handle_commands(messages: list, config: dict, current_rate) -> dict:
                 updates["usd_last_alert_at"]    = None
                 send_telegram(f"✅ 기준가를 현재 환율 <b>{current_rate:,.2f}원</b>으로 리셋했습니다.")
             else:
-                send_telegram("⚠️ 현재 환율 조회 실패로 리셋할 수 없습니다.")
+                send_telegram("⚠️ 비활성 시간대라 환율 조회 안 함. 활성 시간에 /리셋 하거나 /기준가 직접 입력하세요.")
 
         elif text == "/중지":
             updates["usd_active"] = False
@@ -271,25 +272,24 @@ def main():
     kst = datetime.now(timezone(timedelta(hours=9)))
     print(f"🕐 현재 KST: {kst.strftime('%Y-%m-%d %H:%M (%A)')}")
 
-    # 활성 시간 체크
-    if not is_active_time():
-        print("⏸ 비활성 시간 (토/일 또는 휴장 시간대) — 종료")
-        return
+    active = is_active_time()
 
-    print("▶ 활성 시간 — 환율 체크 시작")
-
-    # Supabase 설정 조회
+    # Supabase 설정 조회 (항상 실행)
     config = get_config()
     print(f"⚙️ 설정: base={config.get('usd_base_rate')}, threshold={config.get('usd_threshold')}, active={config.get('usd_active')}")
 
-    # 현재 환율 조회
-    current_rate = fetch_usd_krw()
-    if current_rate:
-        print(f"💵 현재 환율: {current_rate:,.2f}원")
+    # 환율 조회는 활성 시간에만
+    current_rate = None
+    if active:
+        current_rate = fetch_usd_krw()
+        if current_rate:
+            print(f"💵 현재 환율: {current_rate:,.2f}원")
+        else:
+            print("❌ 환율 조회 실패")
     else:
-        print("❌ 환율 조회 실패")
+        print("⏸ 비활성 시간 — 환율 조회 스킵")
 
-    # 텔레그램 명령어 처리
+    # 텔레그램 명령어 처리 (항상 실행)
     last_update_id = config.get("usd_last_tg_update_id")
     messages = get_new_messages(last_update_id)
     updates  = handle_commands(messages, config, current_rate)
@@ -297,8 +297,8 @@ def main():
     # 명령어로 바뀐 설정 반영
     merged_config = {**config, **updates}
 
-    # 알림 활성 + 환율 조회 성공 시 조건 판단
-    if merged_config.get("usd_active") and current_rate:
+    # 환율 알림은 활성 시간 + 알림 켜짐일 때만
+    if active and merged_config.get("usd_active") and current_rate:
         alert_updates = check_and_alert(merged_config, current_rate)
         updates.update(alert_updates)
 
