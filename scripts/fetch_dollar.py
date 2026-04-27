@@ -14,47 +14,35 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID_DOLLAR"]
 
 CONFIG_ID = "config"
 
+# 카카오뱅크 달러박스 보정값
+KAKAO_OFFSET = 1.2
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ────────────────────────────────────────────
 # 활성 시간 체크 (환율 알림용)
-# 활성: 평일 09:00~15:30, 평일 22:30~익일 06:00
 # ────────────────────────────────────────────
 def is_active_time() -> bool:
     kst     = datetime.now(timezone(timedelta(hours=9)))
-    weekday = kst.weekday()  # 0=월 ~ 4=금 5=토 6=일
+    weekday = kst.weekday()
     h, m    = kst.hour, kst.minute
     total   = h * 60 + m
 
-    # 토요일 전일 제외
     if weekday == 5:
         return False
-
-    # 일요일 전일 제외
     if weekday == 6:
         return False
-
-    # 월요일 00:00~06:00 제외
     if weekday == 0 and total < 6 * 60:
         return False
-
-    # 카카오뱅크 점검 시간 제외: 23:30~00:10
     if total >= 23 * 60 + 30 or total <= 10:
         return False
-
-    # 활성 구간 1: 09:00 ~ 15:30
     if 9 * 60 <= total <= 15 * 60 + 30:
         return True
-
-    # 활성 구간 2: 22:30 ~ 23:30
     if 22 * 60 + 30 <= total < 23 * 60 + 30:
         return True
-
-    # 활성 구간 3: 00:10 ~ 06:00
     if 10 < total <= 6 * 60:
         return True
-
     return False
 
 
@@ -113,7 +101,7 @@ def update_config(payload: dict):
 
 
 # ────────────────────────────────────────────
-# 네이버 금융 USD/KRW 스크래핑
+# 네이버 금융 USD/KRW 스크래핑 + 카카오 보정
 # ────────────────────────────────────────────
 def fetch_usd_krw():
     url = "https://finance.naver.com/marketindex/exchangeList.naver?type=R"
@@ -132,8 +120,9 @@ def fetch_usd_krw():
         if match:
             rate = float(match.group(1).replace(",", ""))
             if 900 < rate < 2000:
-                print(f"✅ 환율 조회 성공: {rate}원")
-                return rate
+                adjusted = round(rate + KAKAO_OFFSET, 2)
+                print(f"✅ 환율 조회 성공: 네이버={rate}원 → 카카오 기준={adjusted}원 (+{KAKAO_OFFSET}원 보정)")
+                return adjusted
         print("❌ 환율 파싱 실패")
         return None
     except Exception as e:
@@ -196,7 +185,8 @@ def handle_commands(messages: list, config: dict, current_rate) -> dict:
                 f"기준가: <b>{base:,.2f}원</b>\n"
                 f"변동폭: ±{threshold:.1f}원\n"
                 f"알림 조건: {cond}\n"
-                f"현재 환율: <b>{rate_str}</b>"
+                f"현재 환율: <b>{rate_str}</b>\n"
+                f"<i>(카카오뱅크 기준 +{KAKAO_OFFSET}원 보정 적용)</i>"
             )
 
         elif text == "/리셋":
@@ -274,35 +264,29 @@ def main():
 
     active = is_active_time()
 
-    # Supabase 설정 조회 (항상 실행)
     config = get_config()
     print(f"⚙️ 설정: base={config.get('usd_base_rate')}, threshold={config.get('usd_threshold')}, active={config.get('usd_active')}")
 
-    # 환율 조회는 활성 시간에만
     current_rate = None
     if active:
         current_rate = fetch_usd_krw()
         if current_rate:
-            print(f"💵 현재 환율: {current_rate:,.2f}원")
+            print(f"💵 현재 환율 (카카오 기준): {current_rate:,.2f}원")
         else:
             print("❌ 환율 조회 실패")
     else:
         print("⏸ 비활성 시간 — 환율 조회 스킵")
 
-    # 텔레그램 명령어 처리 (항상 실행)
     last_update_id = config.get("usd_last_tg_update_id")
     messages = get_new_messages(last_update_id)
     updates  = handle_commands(messages, config, current_rate)
 
-    # 명령어로 바뀐 설정 반영
     merged_config = {**config, **updates}
 
-    # 환율 알림은 활성 시간 + 알림 켜짐일 때만
     if active and merged_config.get("usd_active") and current_rate:
         alert_updates = check_and_alert(merged_config, current_rate)
         updates.update(alert_updates)
 
-    # 변경사항 Supabase 저장
     if updates:
         update_config(updates)
         print(f"💾 Supabase 업데이트: {list(updates.keys())}")
