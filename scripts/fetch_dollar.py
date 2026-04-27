@@ -15,7 +15,7 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID_DOLLAR"]
 CONFIG_ID = "config"
 
 # 카카오뱅크 달러박스 보정값
-KAKAO_OFFSET = 1.2
+KAKAO_OFFSET = 1.4
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
