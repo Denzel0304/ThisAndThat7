@@ -189,6 +189,11 @@ def handle_commands(messages: list, config: dict, current_rate) -> dict:
                 cond  = f"{lower}원 이하 or {upper}원 이상"
             else:
                 cond = "미설정"
+            buy_prices = updates.get("usd_buy_prices", config.get("usd_buy_prices") or [])
+            if isinstance(buy_prices, str):
+                import json
+                buy_prices = json.loads(buy_prices) if buy_prices else []
+            buy_line = f"🛒 매수: <b>{', '.join(f'{p:,.0f}' for p in buy_prices)}</b>\n" if buy_prices else "🛒 매수: 없음\n"
             send_telegram(
                 f"📊 <b>현재 설정</b>\n\n"
                 f"시간대: {active_str}\n"
@@ -196,6 +201,7 @@ def handle_commands(messages: list, config: dict, current_rate) -> dict:
                 f"기준가: <b>{base:,.2f}원</b>\n"
                 f"변동폭: ±{threshold:.1f}원\n"
                 f"알림 조건: {cond}\n"
+                f"{buy_line}"
                 f"현재 환율: <b>{rate_str}</b>\n"
                 f"<i>(카카오뱅크 기준 +{KAKAO_OFFSET}원 보정 적용)</i>"
             )
