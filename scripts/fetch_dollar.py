@@ -21,7 +21,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ────────────────────────────────────────────
-# 활성 시간 체크 (환율 알림용)
+# 활성 시간 체크 (08:30 ~ 23:30 KST, 토/일/월새벽 제외)
 # ────────────────────────────────────────────
 def is_active_time() -> bool:
     kst     = datetime.now(timezone(timedelta(hours=9)))
@@ -29,21 +29,14 @@ def is_active_time() -> bool:
     h, m    = kst.hour, kst.minute
     total   = h * 60 + m
 
-    if weekday == 5:
+    if weekday == 5:                        # 토요일 → 비활성
         return False
-    if weekday == 6:
+    if weekday == 6:                        # 일요일 → 비활성
         return False
-    if weekday == 0 and total < 6 * 60:
+    if weekday == 0 and total < 6 * 60:     # 월요일 06:00 이전 → 비활성
         return False
-    if total >= 23 * 60 + 30 or total <= 10:
-        return False
-    if 9 * 60 <= total <= 15 * 60 + 30:
-        return True
-    if 22 * 60 + 30 <= total < 23 * 60 + 30:
-        return True
-    if 10 < total <= 6 * 60:
-        return True
-    return False
+
+    return 8 * 60 + 30 <= total <= 23 * 60 + 30   # 08:30 ~ 23:30
 
 
 # ────────────────────────────────────────────
