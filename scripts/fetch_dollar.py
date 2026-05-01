@@ -158,6 +158,24 @@ def handle_commands(messages: list, config: dict, current_rate) -> dict:
             except:
                 send_telegram("⚠️ 사용법: /범위 5")
 
+        elif text.startswith("/매수"):
+            try:
+                val = float(text.split()[1])
+                existing = updates.get("usd_buy_prices", config.get("usd_buy_prices") or [])
+                if isinstance(existing, str):
+                    import json
+                    existing = json.loads(existing) if existing else []
+                existing.append(val)
+                updates["usd_buy_prices"] = existing
+                prices_str = ", ".join(f"{p:,.0f}" for p in existing)
+                send_telegram(f"✅ 매수가 <b>{val:,.0f}원</b> 추가됨\n📋 전체 매수: {prices_str}")
+            except:
+                send_telegram("⚠️ 사용법: /매수 1475")
+
+        elif text == "/매도":
+            updates["usd_buy_prices"] = []
+            send_telegram("✅ 매수 기록을 모두 <b>초기화</b>했습니다.")
+
         elif text == "/현재":
             base      = updates.get("usd_base_rate", config.get("usd_base_rate"))
             threshold = updates.get("usd_threshold", config.get("usd_threshold"))
@@ -232,11 +250,18 @@ def check_and_alert(config: dict, current_rate: float) -> dict:
     kst       = datetime.now(timezone(timedelta(hours=9)))
     time_str  = kst.strftime("%Y-%m-%d %H:%M KST")
 
+    buy_prices = config.get("usd_buy_prices") or []
+    if isinstance(buy_prices, str):
+        import json
+        buy_prices = json.loads(buy_prices) if buy_prices else []
+    buy_line = f"🛒 매수: {', '.join(f'{p:,.0f}' for p in buy_prices)}\n" if buy_prices else ""
+
     send_telegram(
         f"{emoji} <b>USD/KRW 환율 {direction} 알림</b>\n\n"
         f"💵 현재 환율: <b>{current_rate:,.2f}원</b>\n"
         f"📊 기준가 대비: <b>{diff:+.2f}원</b>\n"
         f"🎯 변동폭: ±{threshold:.1f}원\n"
+        f"{buy_line}"
         f"⏰ {time_str}\n\n"
         f"<i>기준가가 {current_rate:,.2f}원으로 자동 업데이트됩니다.</i>"
     )
